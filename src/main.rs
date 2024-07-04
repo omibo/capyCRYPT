@@ -1,4 +1,4 @@
-use capycrypt::{ecc::keypair::KeyPair, sha3::hashable::SpongeHashable, Message, SecParam};
+use capycrypt::{ecc::keypair::KeyPair, sha3::{encryptable::SpongeEncryptable, hashable::SpongeHashable}, Message, SecParam};
 use structopt::StructOpt;
 
 #[derive(Debug, StructOpt)]
@@ -38,6 +38,16 @@ enum Command {
         #[structopt(help = "Output file name", short, long)]
         output: String,
     },
+
+    #[structopt(name = "sym_enc")]
+    SymEnc {
+        #[structopt(help = "The input string to encryption scheme")]
+        input: String,
+        #[structopt(help = "Password")]
+        pw: String, 
+        #[structopt(help = "Security length", short, long, default_value = "256")]
+        bits: usize
+    }
 }
 
 fn main() {
@@ -63,6 +73,16 @@ fn main() {
             let kp = KeyPair::new(pw.as_bytes(), owner, sec_param);
 
             let _ = kp.write_to_file(&output);
+        }
+
+        Command::SymEnc {
+            input, 
+            pw, 
+            bits
+        } => {
+            let sec_param = SecParam::try_from(bits).expect("Unsupported security parameter.");
+            let mut msg = Message::new(input.into_bytes());
+            msg.sha3_encrypt(&pw.as_bytes(), sec_param);
         }
     }
 }
