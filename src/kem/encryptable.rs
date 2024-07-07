@@ -7,14 +7,15 @@ use crate::{
 };
 use capy_kem::{
     constants::parameter_sets::KEM_768,
-    fips203::{decrypt::k_pke_decrypt, encrypt::k_pke_encrypt},
+    fips203::{
+        decrypt::mlkem_decaps,
+        encrypt::mlkem_encaps,
+        keygen::{KEMPrivateKey, KEMPublicKey},
+    },
 };
-use rand::{thread_rng, RngCore};
-
-use super::keypair::{KEMPrivateKey, KEMPublicKey};
 
 pub trait KEMEncryptable {
-    fn kem_encrypt(&mut self, key: &KEMPublicKey, d: SecParam);
+    fn kem_encrypt(&mut self, key: &KEMPublicKey, d: SecParam) -> Result<(), OperationError>;
     fn kem_decrypt(&mut self, key: &KEMPrivateKey) -> Result<(), OperationError>;
 }
 
@@ -28,8 +29,7 @@ impl KEMEncryptable for Message {
     /// * `Message.digest` with the keyed hash of the message using components derived from the encryption process.
     /// * `Message.sym_nonce` with random bytes 𝑧.
     /// ## Algorithm:
-    /// * Generate a random secret.
-    /// * Encrypt the secret using the KEM public key 𝑉 to generate
+    /// * Encrypt a secret using the KEM public key 𝑉 to generate
     /// shared secret.
     /// * Generate a random nonce 𝑧
     /// * (ke || ka) ← kmac_xof(𝑧 || secret, "", 1024, "S")
@@ -38,21 +38,15 @@ impl KEMEncryptable for Message {
     /// ## Arguments:
     /// * `key: &KEMPublicKey`: The public key 𝑉 used for encryption.
     /// * `d: SecParam`: Security parameters defining the strength of cryptographic operations.
-    fn kem_encrypt(&mut self, key: &KEMPublicKey, d: SecParam) {
+    fn kem_encrypt(&mut self, key: &KEMPublicKey, d: SecParam) -> Result<(), OperationError> {
         self.d = Some(d);
 
-        let mut rng = thread_rng();
-        let secret = &mut [0_u8; 32];
-
-        // generate a random secret to be used as the shared seed
-        rng.fill_bytes(secret);
-
-        let c = k_pke_encrypt::<KEM_768>(secret, &key.ek, &key.rand_bytes);
+        let (k, c) = mlkem_encaps::<KEM_768>(&key.ek)?;
         self.kem_ciphertext = Some(c);
 
         let z = get_random_bytes(512);
         let mut ke_ka = z.clone();
-        ke_ka.extend_from_slice(secret);
+        ke_ka.extend_from_slice(&k);
 
         let ke_ka = kmac_xof(&ke_ka, &[], 1024, "S", d);
         let (ke, ka) = ke_ka.split_at(64);
@@ -63,6 +57,7 @@ impl KEMEncryptable for Message {
         xor_bytes(&mut self.msg, &m);
 
         self.sym_nonce = Some(z);
+        Ok(())
     }
 
     /// # Key Encapsulation Mechanism (KEM) Decryption
@@ -78,13 +73,13 @@ impl KEMEncryptable for Message {
     /// ## Arguments:
     /// * `key: &KEMPrivateKey`: The private key used for decryption.
     fn kem_decrypt(&mut self, key: &KEMPrivateKey) -> Result<(), OperationError> {
+        let d = self.d.ok_or(OperationError::SecurityParameterNotSet)?;
+
         let ciphertext = self
             .kem_ciphertext
             .as_ref()
             .ok_or(OperationError::EmptyDecryptionError)?;
-        let dec = k_pke_decrypt::<KEM_768>(&key.dk, ciphertext);
-
-        let d = self.d.ok_or(OperationError::SecurityParameterNotSet)?;
+        let dec = mlkem_decaps::<KEM_768>(ciphertext, &key.dk)?;
 
         let mut z_pw = self
             .sym_nonce
@@ -107,5 +102,13 @@ impl KEMEncryptable for Message {
             xor_bytes(&mut self.msg, &m);
             Err(OperationError::SHA3DecryptionFailure)
         }
+    }
+}
+
+// This really only exists because errors from KEM
+// module are strings
+impl From<String> for OperationError {
+    fn from(_value: String) -> Self {
+        Self::KEMError
     }
 }
